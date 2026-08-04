@@ -1,7 +1,12 @@
-from fastapi import FastAPI
+from typing import Optional
+from fastapi import FastAPI, status
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 app = FastAPI()
+
+class TaskCreate(BaseModel):
+    title: Optional[str] = None
 
 # In-memory database
 tasks = [
@@ -24,4 +29,19 @@ def get_task(id: int):
         if task["id"] == id:
             return task
     return JSONResponse(status_code=404, content={"error": f"Task {id} not found"})
+
+@app.post("/tasks", status_code=status.HTTP_201_CREATED)
+def create_task(task_in: TaskCreate):
+    if not task_in.title or not task_in.title.strip():
+        return JSONResponse(status_code=400, content={"error": "Title is required and cannot be empty"})
+    
+    new_id = max((t["id"] for t in tasks), default=0) + 1
+    new_task = {
+        "id": new_id,
+        "title": task_in.title,
+        "done": False
+    }
+    tasks.append(new_task)
+    return new_task
+
 
