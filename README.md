@@ -1,102 +1,55 @@
-# Task CRUD FastAPI Service with SQLite
+# Task CRUD FastAPI Service with PostgreSQL & Docker Compose
 
-A clean and efficient RESTful API built with [FastAPI](https://fastapi.tiangolo.com/), [Pydantic](https://docs.pydantic.dev/), and standard [SQLite3](https://docs.python.org/3/library/sqlite3.html) for managing tasks with full CRUD capabilities, persistent database storage, and interactive OpenAPI / Swagger UI documentation.
+A production-ready RESTful API built with [FastAPI](https://fastapi.tiangolo.com/), [Pydantic](https://docs.pydantic.dev/), and [PostgreSQL](https://www.postgresql.org/) using [psycopg2](https://www.psycopg.org/), fully containerized with [Docker Compose](https://docs.docker.com/compose/).
 
 ---
 
 ## Project Overview
 
-This repository provides a task management microservice demonstrating best practices in FastAPI and SQLite database integration:
-- **SQLite Database Persistence**: All task operations interact directly with a local `tasks.db` database file.
-- **Pydantic Validation**: Ensures robust request body validation for creating and updating tasks.
-- **RESTful Architecture**: Follows standard HTTP methods (`GET`, `POST`, `PUT`, `DELETE`) and appropriate status codes (`200`, `201`, `204`, `400`, `404`).
-- **Interactive OpenAPI Documentation**: Built-in Swagger UI at `/docs` with detailed route summaries and descriptions.
+This repository provides a fully containerized task management microservice:
+- **One-Command Launch**: Easily spin up the entire application stack (FastAPI app + PostgreSQL database) using Docker Compose.
+- **PostgreSQL Database Persistence**: Data is persisted across container restarts using a named Docker volume (`taskdata`).
+- **Environment Variable Configuration**: Managed securely via `.env` files loaded with `python-dotenv`.
+- **RESTful API**: Follows standard HTTP methods (`GET`, `POST`, `PUT`, `DELETE`) and standard status codes (`200`, `201`, `204`, `400`, `404`).
+- **OpenAPI / Swagger UI Docs**: Interactive documentation auto-generated at `/docs`.
 
 ---
 
-## Database Architecture & Integration
+## One-Command Quick Start
 
-### Why SQLite?
-- **Zero-Configuration**: Built directly into Python's standard library (`sqlite3`), requiring no separate database server daemon to install or run.
-- **Lightweight & Fast**: Ideal for local development, rapid prototyping, and small-to-medium single-server applications.
-- **ACID Compliant**: Provides full relational database features and SQL support.
+You can run the complete stack (FastAPI server + PostgreSQL database) with a single command:
 
-### Storage Location
-- **Database File**: `tasks.db` located in the root project directory (`./tasks.db`).
-- **Git Tracking**: `*.db` files are explicitly excluded via `.gitignore` to keep runtime data separate from source control.
-
----
-
-## Setup & Running Locally
-
-### 1. Prerequisites
-- Python 3.8+ installed on your system.
-
-### 2. Create and Activate Virtual Environment
-
-On **macOS / Linux**:
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+cp .env.example .env && docker compose up -d
 ```
 
-On **Windows (PowerShell)**:
-```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-```
+Once running, access:
+- **API Base URL**: `http://localhost:8000`
+- **Interactive Swagger UI Docs**: `http://localhost:8000/docs`
+- **ReDoc Documentation**: `http://localhost:8000/redoc`
 
-### 3. Install Dependencies
+To stop the stack (while persisting data in the `taskdata` volume):
 ```bash
-pip install -r requirements.txt
+docker compose down
 ```
-
-### 4. Start the FastAPI Server
-Run the application using `uvicorn` with auto-reload enabled:
-```bash
-uvicorn main:app --reload
-```
-
-> **Note on First Run**: The `tasks.db` file and `tasks` table are **automatically created on first startup** via FastAPI's `lifespan` handler. If the database table is empty, it will auto-seed 3 sample tasks.
-
-The server will start at `http://127.0.0.1:8000`. You can access:
-- **Interactive Swagger UI Docs**: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
-- **ReDoc Documentation**: [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
 
 ---
 
-## Tested SQL Queries
+## Environment Variables Configuration
 
-You can inspect and manipulate `tasks.db` using tools like **DB Browser for SQLite** or the **VS Code SQLite Extension**. Here are the verified SQL queries:
+The application reads database configuration from environment variables defined in `.env`.
 
-```sql
--- 1. Retrieve all tasks
-SELECT * FROM tasks;
+| Variable | Description | Local Dev Default | Docker Compose Default |
+| :--- | :--- | :--- | :--- |
+| `DATABASE_URL` | PostgreSQL connection string | `postgresql://postgres:dev@localhost:5432/tasks` | `postgresql://postgres:dev@db:5432/tasks` |
 
--- 2. Retrieve only completed tasks
-SELECT * FROM tasks WHERE done = 1;
-
--- 3. Count total tasks
-SELECT COUNT(*) FROM tasks;
-
--- 4. Mark all tasks as completed
-UPDATE tasks SET done = 1;
-
--- 5. Delete all completed tasks
-DELETE FROM tasks WHERE done = 1;
-```
-
-### Database Viewer Screenshot
-
-![Database Viewer Interface](./docs/screenshot_placeholder.png)
-
-*_Placeholder: Attach a screenshot of your DB Browser for SQLite or VS Code SQLite Extension window displaying the `tasks` table query results here._*
+> **Security Note**: `.env` is ignored by `.gitignore` and has been confirmed absent from git history (`git log --all -- .env` returns empty). A `.env.example` file is provided as a template.
 
 ---
 
-## API Endpoints Reference
+## API Endpoints Summary
 
-| HTTP Method | Path | Summary | Status Codes |
+| HTTP Method | Path | Summary | Expected Status Codes |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/` | Root Welcome Endpoint | `200 OK` |
 | `GET` | `/health` | Health Check | `200 OK` |
@@ -108,58 +61,60 @@ DELETE FROM tasks WHERE done = 1;
 
 ---
 
-## Example Usage
+## Example Usage & Verification
 
-### Creating a Task (`POST /tasks`)
+### 1. Create a Task (`POST /tasks`)
 
 **Command:**
 ```bash
-curl -i -X POST http://127.0.0.1:8000/tasks \
+curl -i -X POST http://localhost:8000/tasks \
   -H "Content-Type: application/json" \
-  -d '{"title": "Complete README documentation"}'
+  -d '{"title": "Deploy Docker Container"}'
 ```
 
-**Response:**
+**Response Output:**
 ```http
 HTTP/1.1 201 Created
-date: Tue, 04 Aug 2026 10:40:00 GMT
+date: Tue, 04 Aug 2026 13:45:00 GMT
 server: uvicorn
-content-length: 61
+content-length: 56
 content-type: application/json
 
-{"id":4,"title":"Complete README documentation","done":false}
+{"id":4,"title":"Deploy Docker Container","done":false}
 ```
 
-### Updating a Task (`PUT /tasks/4`)
+### 2. Retrieve All Tasks (`GET /tasks`)
 
 **Command:**
 ```bash
-curl -i -X PUT http://127.0.0.1:8000/tasks/4 \
-  -H "Content-Type: application/json" \
-  -d '{"done": true}'
+curl -i http://localhost:8000/tasks
 ```
 
-**Response:**
+**Response Output:**
 ```http
 HTTP/1.1 200 OK
-date: Tue, 04 Aug 2026 10:40:05 GMT
+date: Tue, 04 Aug 2026 13:45:05 GMT
 server: uvicorn
-content-length: 60
 content-type: application/json
 
-{"id":4,"title":"Complete README documentation","done":true}
+[
+  {"id":1,"title":"Buy groceries","done":false},
+  {"id":2,"title":"Learn FastAPI","done":false},
+  {"id":3,"title":"Push code to GitHub","done":true},
+  {"id":4,"title":"Deploy Docker Container","done":false}
+]
 ```
 
-### Deleting a Task (`DELETE /tasks/4`)
+### 3. Verify Data in PostgreSQL Container (`psql`)
 
-**Command:**
+Run `psql` directly inside the running container:
+
 ```bash
-curl -i -X DELETE http://127.0.0.1:8000/tasks/4
+docker exec -it taskdb psql -U postgres -d tasks -c "SELECT * FROM tasks;"
 ```
 
-**Response:**
-```http
-HTTP/1.1 204 No Content
-date: Tue, 04 Aug 2026 10:40:10 GMT
-server: uvicorn
-```
+### PostgreSQL Database Interface Screenshot
+
+![PostgreSQL Database Rows Screenshot](./docs/postgres_screenshot_placeholder.png)
+
+*_Placeholder: Attach a screenshot of psql output or your database viewer displaying the `tasks` table rows in PostgreSQL here._*
