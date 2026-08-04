@@ -141,7 +141,7 @@ def update_task(id: int, task_in: TaskUpdate):
     if not row:
         cursor.close()
         conn.close()
-        return JSONResponse(status_code=404, content={"error": f"Task {id} not found"})
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
 
     if task_in.title is None and task_in.done is None:
         cursor.close()
@@ -183,6 +183,7 @@ def delete_task(id: int):
     conn.close()
 
     if deleted_count == 0:
-        return JSONResponse(status_code=404, content={"error": f"Task {id} not found"})
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
