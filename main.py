@@ -82,7 +82,7 @@ def health_check():
 def get_tasks():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, title, done FROM tasks ORDER BY id;")
+    cursor.execute("SELECT * FROM tasks ORDER BY id;")
     rows = cursor.fetchall()
     cursor.close()
     conn.close()
@@ -96,13 +96,14 @@ def get_tasks():
 def get_task(id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, title, done FROM tasks WHERE id = %s;", (id,))
+    cursor.execute("SELECT * FROM tasks WHERE id = %s;", (id,))
     row = cursor.fetchone()
     cursor.close()
     conn.close()
     if not row:
-        return JSONResponse(status_code=404, content={"error": f"Task {id} not found"})
+        return JSONResponse(status_code=404, content={"error": "Task not found"})
     return dict(row)
+
 
 @app.post(
     "/tasks",
