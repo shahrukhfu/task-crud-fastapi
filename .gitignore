@@ -8,3 +8,4 @@ env/
 .pytest_cache/
 .vscode/
 .idea/
+*.db
