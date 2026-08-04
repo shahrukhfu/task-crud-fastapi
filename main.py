@@ -123,7 +123,7 @@ def create_task(task_in: TaskCreate):
 @app.put(
     "/tasks/{id}",
     summary="Update a Task",
-    description="Updates the title and/or completed status of an existing task by ID. Returns 404 if the task is not found or 400 if the payload is invalid."
+    description="Updates the title and/or completed status of an existing task by ID using SQL operations. Returns 404 if the task is not found or 400 if the payload is invalid."
 )
 def update_task(id: int, task_in: TaskUpdate):
     conn = get_db_connection()
@@ -147,26 +147,29 @@ def update_task(id: int, task_in: TaskUpdate):
 
     cursor.execute("UPDATE tasks SET title = ?, done = ? WHERE id = ?", (new_title, new_done, id))
     conn.commit()
+
+    cursor.execute("SELECT id, title, done FROM tasks WHERE id = ?", (id,))
+    updated_row = cursor.fetchone()
     conn.close()
 
-    return {"id": id, "title": new_title, "done": new_done}
+    return {"id": updated_row["id"], "title": updated_row["title"], "done": bool(updated_row["done"])}
 
 @app.delete(
     "/tasks/{id}",
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Delete a Task",
-    description="Removes a task with the specified ID from the database. Returns 204 No Content on success or 404 if not found."
+    description="Removes a task with the specified ID from the database using SQL operations. Returns 204 No Content on success or 404 if not found."
 )
 def delete_task(id: int):
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT id FROM tasks WHERE id = ?", (id,))
-    row = cursor.fetchone()
-    if not row:
-        conn.close()
-        return JSONResponse(status_code=404, content={"error": f"Task {id} not found"})
-
     cursor.execute("DELETE FROM tasks WHERE id = ?", (id,))
+    deleted_count = cursor.rowcount
     conn.commit()
     conn.close()
+
+    if deleted_count == 0:
+        return JSONResponse(status_code=404, content={"error": f"Task {id} not found"})
+
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
