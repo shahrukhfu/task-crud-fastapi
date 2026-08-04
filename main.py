@@ -101,7 +101,7 @@ def get_task(id: int):
     "/tasks",
     status_code=status.HTTP_201_CREATED,
     summary="Create a New Task",
-    description="Creates a new task with a non-empty title, generates a unique ID, and sets 'done' to False. Returns 400 Bad Request if title is missing or empty."
+    description="Inserts a new task directly into the tasks.db SQLite table. Returns 400 Bad Request if title is missing or empty."
 )
 def create_task(task_in: TaskCreate):
     if not task_in.title or not task_in.title.strip():
@@ -112,9 +112,13 @@ def create_task(task_in: TaskCreate):
     cursor.execute("INSERT INTO tasks (title, done) VALUES (?, ?)", (task_in.title, False))
     new_id = cursor.lastrowid
     conn.commit()
+
+    cursor.execute("SELECT id, title, done FROM tasks WHERE id = ?", (new_id,))
+    row = cursor.fetchone()
     conn.close()
 
-    return {"id": new_id, "title": task_in.title, "done": False}
+    return {"id": row["id"], "title": row["title"], "done": bool(row["done"])}
+
 
 @app.put(
     "/tasks/{id}",
