@@ -16,7 +16,10 @@ SUPABASE_KEY: str = os.getenv("SUPABASE_KEY", "")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-security = HTTPBearer(auto_error=False)
+security = HTTPBearer(
+    auto_error=False,
+    description="Enter the Bearer access token obtained from /auth/login"
+)
 
 def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
     if not credentials or not credentials.credentials:
@@ -49,7 +52,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Task CRUD API",
-    description="A FastAPI application integrated with Supabase.",
+    description="A FastAPI application integrated with Supabase Authentication and Bearer Token Security.",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -58,30 +61,46 @@ class AuthRequest(BaseModel):
     email: Optional[str] = None
     password: Optional[str] = None
 
-@app.get("/")
+@app.get("/", summary="Root Greeting", tags=["General"])
 def read_root():
     return {"message": "Hello World"}
 
-@app.get("/health")
+@app.get("/health", summary="Health Check", tags=["General"])
 def health_check():
     return {"status": "ok"}
 
-@app.get("/public/info")
+@app.get("/public/info", summary="Public Info", description="Unprotected endpoint accessible to anyone.", tags=["Public"])
 def public_info():
     return {"message": "Welcome stranger! This info is public."}
 
-@app.get("/protected/profile")
+@app.get(
+    "/protected/profile",
+    summary="User Profile",
+    description="Protected endpoint returning authenticated user metadata. Requires Bearer authentication.",
+    tags=["Protected"]
+)
 def protected_profile(current_user=Depends(get_current_user)):
     if hasattr(current_user, "model_dump"):
         return current_user.model_dump(mode="json")
     return current_user
 
-@app.get("/protected/dashboard")
+@app.get(
+    "/protected/dashboard",
+    summary="User Dashboard",
+    description="Protected endpoint returning user dashboard data. Requires Bearer authentication.",
+    tags=["Protected"]
+)
 def protected_dashboard(current_user=Depends(get_current_user)):
     user_email = getattr(current_user, "email", "User")
     return {"message": f"Welcome to your dashboard, {user_email}!"}
 
-@app.post("/auth/signup", status_code=status.HTTP_201_CREATED)
+@app.post(
+    "/auth/signup",
+    status_code=status.HTTP_201_CREATED,
+    summary="Sign Up",
+    description="Registers a new user account with email and password in Supabase.",
+    tags=["Authentication"]
+)
 def signup(credentials: AuthRequest):
     if not credentials.email or not credentials.email.strip() or not credentials.password or not credentials.password.strip():
         return JSONResponse(
@@ -114,7 +133,12 @@ def signup(credentials: AuthRequest):
             content={"error": error_msg}
         )
 
-@app.post("/auth/login")
+@app.post(
+    "/auth/login",
+    summary="Log In",
+    description="Authenticates user with email and password via Supabase and returns access and refresh JWT tokens.",
+    tags=["Authentication"]
+)
 def login(credentials: AuthRequest):
     if not credentials.email or not credentials.email.strip() or not credentials.password or not credentials.password.strip():
         return JSONResponse(
@@ -144,7 +168,13 @@ def login(credentials: AuthRequest):
             content={"error": "Invalid login credentials"}
         )
 
-@app.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+@app.post(
+    "/auth/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Log Out",
+    description="Protected endpoint that logs out the authenticated user. Requires Bearer authentication.",
+    tags=["Authentication"]
+)
 def logout(current_user=Depends(get_current_user)):
     try:
         supabase.auth.sign_out()
