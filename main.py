@@ -50,7 +50,29 @@ def protected_profile(authorization: Optional[str] = Header(None)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             content={"error": "Access token required"}
         )
-    return {"message": "Access token provided"}
+    
+    token = authorization.split("Bearer ", 1)[1].strip()
+    if not token:
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"error": "Access token required"}
+        )
+
+    try:
+        user_response = supabase.auth.get_user(token)
+        if not user_response or not user_response.user:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"error": "Invalid or expired token"}
+            )
+        
+        user_data = user_response.user.model_dump(mode="json")
+        return user_data
+    except Exception:
+        return JSONResponse(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            content={"error": "Invalid or expired token"}
+        )
 
 @app.post("/auth/signup", status_code=status.HTTP_201_CREATED)
 def signup(credentials: AuthRequest):
