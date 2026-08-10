@@ -1,18 +1,28 @@
 import hashlib
+import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
+from pydantic import BaseModel, HttpUrl, ValidationError
 
 # Define base paths
 BASE_DIR = Path(__file__).resolve().parent.parent
 CACHE_DIR = BASE_DIR / "cache"
 CACHE_DETAIL_DIR = CACHE_DIR / "detail"
+OUTPUT_DIR = BASE_DIR / "output"
+
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_DETAIL_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+BOOKS_JSON = OUTPUT_DIR / "books.json"
+ERRORS_JSON = OUTPUT_DIR / "errors.json"
 
 START_URL = "https://books.toscrape.com/catalogue/page-1.html"
 HEADERS = {
@@ -21,6 +31,28 @@ HEADERS = {
 TIMEOUT = 5
 REQUEST_DELAY = 0.5
 MAX_PAGES = 3
+
+class BookRecord(BaseModel):
+    title: str
+    product_url: HttpUrl
+    price_gbp: float
+    price_text: str
+    availability_text: str
+    rating_text: str
+    description: Optional[str] = None
+    source_page: HttpUrl
+    fetched_at: str
+
+def parse_price(price_text: str) -> float:
+    """
+    Normalizes a price text string (e.g., '£51.77') to a numeric float (51.77).
+    """
+    if not price_text:
+        return 0.0
+    match = re.search(r"[\d.]+", price_text)
+    if match:
+        return float(match.group(0))
+    return 0.0
 
 def get_page_html(url: str, cache_path: Path) -> str:
     """
@@ -116,19 +148,19 @@ def extract_book_detail(item: dict) -> dict:
 
     # Title
     title_el = soup.select_one(".product_main h1")
-    title = title_el.text.strip() if title_el else None
+    title = title_el.text.strip() if title_el else ""
 
     # Price
     price_el = soup.select_one(".product_main .price_color")
-    price_text = price_el.text.strip() if price_el else None
+    price_text = price_el.text.strip() if price_el else ""
 
     # Availability
     avail_el = soup.select_one(".product_main .availability")
-    availability_text = avail_el.text.strip() if avail_el else None
+    availability_text = avail_el.text.strip() if avail_el else ""
 
     # Rating
     rating_el = soup.select_one(".product_main .star-rating")
-    rating_text = None
+    rating_text = ""
     if rating_el:
         rating_classes = [c for c in rating_el.get("class", []) if c != "star-rating"]
         if rating_classes:
@@ -143,10 +175,12 @@ def extract_book_detail(item: dict) -> dict:
             description = desc_p.text.strip()
 
     fetched_at = datetime.now(timezone.utc).isoformat()
+    price_gbp = parse_price(price_text)
 
     return {
         "title": title,
         "product_url": product_url,
+        "price_gbp": price_gbp,
         "price_text": price_text,
         "availability_text": availability_text,
         "rating_text": rating_text,
@@ -157,16 +191,29 @@ def extract_book_detail(item: dict) -> dict:
 
 def main():
     items = crawl_catalogue_pages(START_URL, max_pages=MAX_PAGES)
-    raw_records = []
+    valid_records = []
+    invalid_records = []
 
     for item in items:
-        record = extract_book_detail(item)
-        raw_records.append(record)
+        raw_record = extract_book_detail(item)
+        try:
+            validated = BookRecord(**raw_record)
+            valid_records.append(validated.model_dump(mode="json"))
+        except ValidationError as err:
+            invalid_records.append({
+                "record": raw_record,
+                "error": err.errors()
+            })
 
-    print(f"detail_pages = {len(raw_records)}")
-    if raw_records:
-        print("Sample raw record:")
-        print(raw_records[0])
+    # Save to output files (idempotent overwrite)
+    with open(BOOKS_JSON, "w", encoding="utf-8") as f:
+        json.dump(valid_records, f, indent=2, ensure_ascii=False)
+
+    with open(ERRORS_JSON, "w", encoding="utf-8") as f:
+        json.dump(invalid_records, f, indent=2, ensure_ascii=False)
+
+    print(f"Validated records saved to {BOOKS_JSON.name}: {len(valid_records)}")
+    print(f"Invalid records saved to {ERRORS_JSON.name}: {len(invalid_records)}")
 
 if __name__ == "__main__":
     main()
