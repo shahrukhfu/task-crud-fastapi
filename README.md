@@ -12,6 +12,7 @@ This repository demonstrates a complete authentication system built with FastAPI
 - **Public & Protected Endpoints**: Public routes (`/`, `/health`, `/public/info`) and protected routes (`/protected/profile`, `/protected/dashboard`, `/auth/logout`).
 - **Interactive Swagger UI**: Interactive API documentation at `/docs` with an **Authorize** padlock button to test protected endpoints directly in the browser.
 - **Secure Configuration**: Environment variables (`SUPABASE_URL`, `SUPABASE_KEY`) safely managed via `.env` files (un-tracked in git) with a `.env.example` template provided.
+- **Scraper Module (Assignment A9)**: Includes a polite web scraper & validation pipeline. See the [Scraper Documentation](./scraper/README.md) for details.
 
 ---
 
