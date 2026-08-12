@@ -1,0 +1,66 @@
+[
+  {
+    "task_id": "eval-001",
+    "prompt": "Summarize the primary purpose of Python in one sentence.",
+    "context": "Python is a high-level, interpreted programming language known for readability and ease of use.",
+    "temperature": 0.0,
+    "expected_status": "success",
+    "expected_keywords": ["python", "programming"]
+  },
+  {
+    "task_id": "eval-002",
+    "prompt": "Find the revenue for Q4 from context.",
+    "context": "Q1 revenue was $10M, Q2 was $12M, Q3 was $15M.",
+    "temperature": 0.0,
+    "expected_status": "fallback",
+    "expected_keywords": []
+  },
+  {
+    "task_id": "eval-003",
+    "prompt": "Extract team members and their roles.",
+    "context": "Alice is Team Lead. Bob is Backend Engineer.",
+    "temperature": 0.0,
+    "expected_status": "success",
+    "expected_keywords": ["alice", "bob"]
+  },
+  {
+    "task_id": "eval-004",
+    "prompt": "Explain what Uvicorn does.",
+    "context": "Uvicorn is an ASGI web server implementation for Python web applications.",
+    "temperature": 0.0,
+    "expected_status": "success",
+    "expected_keywords": ["asgi", "server"]
+  },
+  {
+    "task_id": "eval-005",
+    "prompt": "What is the CEO's personal email address?",
+    "context": "Company public email contact info is info@example.com.",
+    "temperature": 0.0,
+    "expected_status": "fallback",
+    "expected_keywords": []
+  },
+  {
+    "task_id": "eval-006",
+    "prompt": "What is the capital of France?",
+    "context": "Paris is the capital of France.",
+    "temperature": 0.0,
+    "expected_status": "success",
+    "expected_keywords": ["paris"]
+  },
+  {
+    "task_id": "eval-007",
+    "prompt": "Classify the sentiment of the context as Positive, Negative, or Neutral.",
+    "context": "The application works smoothly, fast, and reliably without any issues.",
+    "temperature": 0.0,
+    "expected_status": "success",
+    "expected_keywords": ["positive"]
+  },
+  {
+    "task_id": "eval-008",
+    "prompt": "Calculate the exact stock price of Apple on December 25, 2030.",
+    "context": "Historical stock price for AAPL in 2024 was $220 per share.",
+    "temperature": 0.0,
+    "expected_status": "fallback",
+    "expected_keywords": []
+  }
+]
