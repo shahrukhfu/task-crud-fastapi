@@ -1,3 +1,4 @@
+import datetime
 import json
 import os
 import re
@@ -8,7 +9,7 @@ from fastapi import FastAPI, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from supabase import create_client, Client
 
 load_dotenv()
@@ -25,6 +26,7 @@ security = HTTPBearer(
 )
 
 PROMPT_FILE_PATH = os.getenv("PROMPT_FILE_PATH", os.path.join("prompts", "task-execution-v1.md"))
+QUARANTINE_FILE = os.path.join("logs", "quarantine.jsonl")
 
 def load_system_prompt() -> str:
     candidates = [
@@ -43,14 +45,13 @@ def load_system_prompt() -> str:
     )
 
 def clean_json_response(raw_text: str) -> str:
+    if not raw_text:
+        return ""
     text = raw_text.strip()
     if text.startswith("```"):
-        lines = text.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+        text = text.strip()
     return text
 
 def sanitize_error(err: Exception) -> str:
@@ -62,6 +63,15 @@ def sanitize_error(err: Exception) -> str:
     if supabase_key and len(supabase_key) > 6:
         msg = msg.replace(supabase_key, "[REDACTED_SUPABASE_KEY]")
     return msg
+
+def log_to_quarantine(record: dict):
+    os.makedirs("logs", exist_ok=True)
+    record_with_ts = {
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        **record
+    }
+    with open(QUARANTINE_FILE, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record_with_ts) + "\n")
 
 def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
     if not credentials or not credentials.credentials:
@@ -115,6 +125,13 @@ class TaskExecutionResponse(BaseModel):
     result: Union[str, dict, list, Any]
     confidence: float
     error_message: Optional[str] = None
+
+def validate_llm_json(raw_text: str, default_task_id: str) -> TaskExecutionResponse:
+    cleaned = clean_json_response(raw_text)
+    validated = TaskExecutionResponse.model_validate_json(cleaned)
+    if not validated.task_id:
+        validated.task_id = default_task_id
+    return validated
 
 @app.get("/", summary="Root Greeting", tags=["General"])
 def read_root():
@@ -241,7 +258,7 @@ def logout(current_user=Depends(get_current_user)):
     "/task/execute",
     response_model=TaskExecutionResponse,
     summary="Execute Task with LLM Pipeline",
-    description="Processes task prompt using externalized prompt v1 and OpenAI-compatible LLM provider.",
+    description="Processes task prompt using externalized prompt v1 and OpenAI-compatible LLM provider with Pydantic validation and repair retry.",
     tags=["LLM Task Execution"]
 )
 @app.post(
@@ -283,8 +300,12 @@ def execute_task(request: TaskExecutionRequest):
     api_key = os.getenv("LLM_API_KEY", "")
     model = os.getenv("LLM_MODEL", "openrouter/free")
 
+    client = OpenAI(base_url=base_url, api_key=api_key)
+
+    # Attempt 1: Primary LLM call & Pydantic validation
+    raw_response_1 = ""
+    error_1 = ""
     try:
-        client = OpenAI(base_url=base_url, api_key=api_key)
         completion = client.chat.completions.create(
             model=model,
             messages=[
@@ -293,62 +314,63 @@ def execute_task(request: TaskExecutionRequest):
             ],
             temperature=temp
         )
+        raw_response_1 = completion.choices[0].message.content or ""
+        return validate_llm_json(raw_response_1, request.task_id)
+    except Exception as exc:
+        error_1 = sanitize_error(exc)
 
-        raw_content = completion.choices[0].message.content or ""
-        cleaned = clean_json_response(raw_content)
-
-        try:
-            parsed = json.loads(cleaned)
-            if isinstance(parsed, dict):
-                return TaskExecutionResponse(
-                    task_id=parsed.get("task_id", request.task_id),
-                    status=parsed.get("status", "success"),
-                    result=parsed.get("result", raw_content),
-                    confidence=float(parsed.get("confidence", 0.9)),
-                    error_message=parsed.get("error_message")
-                )
-        except Exception:
-            retry_completion = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": user_message},
-                    {"role": "assistant", "content": raw_content},
-                    {"role": "user", "content": "IMPORTANT: Your response was not valid JSON. Respond ONLY with raw valid JSON object matching the required schema. Do not add markdown code blocks or text outside JSON."}
-                ],
-                temperature=temp
-            )
-            retry_content = retry_completion.choices[0].message.content or ""
-            retry_cleaned = clean_json_response(retry_content)
-
-            try:
-                parsed_retry = json.loads(retry_cleaned)
-                if isinstance(parsed_retry, dict):
-                    return TaskExecutionResponse(
-                        task_id=parsed_retry.get("task_id", request.task_id),
-                        status=parsed_retry.get("status", "success"),
-                        result=parsed_retry.get("result", retry_content),
-                        confidence=float(parsed_retry.get("confidence", 0.9)),
-                        error_message=parsed_retry.get("error_message")
-                    )
-            except Exception:
-                pass
-
-            return TaskExecutionResponse(
-                task_id=request.task_id,
-                status="fallback",
-                result=raw_content,
-                confidence=0.0,
-                error_message="Model response could not be parsed as valid JSON."
-            )
-
-    except Exception as e:
-        sanitized_msg = sanitize_error(e)
-        return TaskExecutionResponse(
-            task_id=request.task_id,
-            status="fallback",
-            result="Task execution failed due to LLM provider error.",
-            confidence=0.0,
-            error_message=sanitized_msg
+    # Attempt 2: Single Repair Retry with validation error feedback
+    raw_response_2 = ""
+    error_2 = ""
+    try:
+        repair_user_prompt = (
+            f"IMPORTANT REPAIR INSTRUCTION:\n"
+            f"Your previous response failed JSON/Pydantic validation with error:\n"
+            f"{error_1}\n\n"
+            f"Previous broken output:\n"
+            f"{raw_response_1}\n\n"
+            f"Respond strictly with valid JSON conforming to schema:\n"
+            f"{{\"task_id\": \"{request.task_id}\", \"status\": \"success|fallback|error\", \"result\": ..., \"confidence\": 0.0-1.0, \"error_message\": null|str}}\n"
+            f"Do NOT include markdown formatting or commentary outside JSON."
         )
+
+        messages = [
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": user_message}
+        ]
+        if raw_response_1:
+            messages.append({"role": "assistant", "content": raw_response_1})
+        messages.append({"role": "user", "content": repair_user_prompt})
+
+        repair_completion = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temp
+        )
+        raw_response_2 = repair_completion.choices[0].message.content or ""
+        return validate_llm_json(raw_response_2, request.task_id)
+    except Exception as exc:
+        error_2 = sanitize_error(exc)
+
+    # Both initial call and repair retry failed -> Log quarantine & return 422 Unprocessable Entity
+    quarantine_record = {
+        "task_id": request.task_id,
+        "prompt": request.prompt,
+        "context": request.context,
+        "attempt_1_raw": raw_response_1,
+        "attempt_1_error": error_1,
+        "attempt_2_raw": raw_response_2,
+        "attempt_2_error": error_2
+    }
+    log_to_quarantine(quarantine_record)
+
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail={
+            "error": "LLM response failed schema validation and repair retry.",
+            "task_id": request.task_id,
+            "message": "Unvalidated LLM output quarantined."
+        }
+    )
+
 
