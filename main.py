@@ -1,18 +1,25 @@
 import datetime
 import json
+import logging
 import os
+import random
 import re
+import time
 from contextlib import asynccontextmanager
 from typing import Optional, Union, Any
 from dotenv import load_dotenv
 from fastapi import FastAPI, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import openai
 from openai import OpenAI
 from pydantic import BaseModel, ValidationError
 from supabase import create_client, Client
 
 load_dotenv()
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("llm_pipeline")
 
 raw_url = os.getenv("SUPABASE_URL", "")
 SUPABASE_URL: str = raw_url.removesuffix("/rest/v1/").removesuffix("/rest/v1").rstrip("/")
@@ -27,6 +34,7 @@ security = HTTPBearer(
 
 PROMPT_FILE_PATH = os.getenv("PROMPT_FILE_PATH", os.path.join("prompts", "task-execution-v1.md"))
 QUARANTINE_FILE = os.path.join("logs", "quarantine.jsonl")
+PROMPT_VERSION = "v1"
 
 def load_system_prompt() -> str:
     candidates = [
@@ -72,6 +80,95 @@ def log_to_quarantine(record: dict):
     }
     with open(QUARANTINE_FILE, "a", encoding="utf-8") as f:
         f.write(json.dumps(record_with_ts) + "\n")
+
+def log_llm_call_metrics(
+    model: str,
+    prompt_version: str,
+    input_tokens: int,
+    output_tokens: int,
+    latency_ms: float,
+    repair_status: str,
+    task_id: str
+):
+    log_data = {
+        "event": "llm_metrics",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "task_id": task_id,
+        "model": model,
+        "prompt_version": prompt_version,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "latency_ms": round(latency_ms, 2),
+        "repair_status": repair_status
+    }
+    logger.info(json.dumps(log_data))
+
+def is_retryable_error(exc: Exception) -> tuple[bool, bool]:
+    """
+    Determines if an error is retryable.
+    Retries ONLY on timeouts, 429, and 5xx errors. Never retries on 400/401/403.
+    Returns (is_retryable, is_timeout).
+    """
+    if isinstance(exc, (openai.APITimeoutError, TimeoutError)):
+        return True, True
+    if isinstance(exc, openai.RateLimitError):
+        return True, False
+    if isinstance(exc, openai.InternalServerError):
+        return True, False
+    if isinstance(exc, openai.APIStatusError):
+        sc = getattr(exc, "status_code", None)
+        if sc and sc >= 500:
+            return True, False
+        if sc == 429:
+            return True, False
+        return False, False
+    
+    err_str = str(exc).lower()
+    if "timeout" in err_str or "timed out" in err_str:
+        return True, True
+    return False, False
+
+def call_llm_with_retry(
+    client: OpenAI,
+    model: str,
+    messages: list[dict],
+    temperature: float,
+    max_retries: int = 3,
+    base_delay: float = 0.5
+):
+    last_exception = None
+    is_timeout = False
+
+    for attempt in range(max_retries):
+        try:
+            completion = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature
+            )
+            return completion
+        except HTTPException:
+            raise
+        except Exception as exc:
+            last_exception = exc
+            retryable, timeout_flag = is_retryable_error(exc)
+            if timeout_flag:
+                is_timeout = True
+
+            if not retryable or attempt == max_retries - 1:
+                break
+
+            delay = base_delay * (2 ** attempt)
+            jitter = random.uniform(0.0, 0.5 * delay)
+            time.sleep(delay + jitter)
+
+    if is_timeout or isinstance(last_exception, (openai.APITimeoutError, TimeoutError)) or "timeout" in str(last_exception).lower():
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Gateway Timeout: LLM provider request timed out (30s limit)."
+        ) from last_exception
+
+    raise last_exception
 
 def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)):
     if not credentials or not credentials.credentials:
@@ -258,7 +355,7 @@ def logout(current_user=Depends(get_current_user)):
     "/task/execute",
     response_model=TaskExecutionResponse,
     summary="Execute Task with LLM Pipeline",
-    description="Processes task prompt using externalized prompt v1 and OpenAI-compatible LLM provider with Pydantic validation and repair retry.",
+    description="Processes task prompt using externalized prompt v1 and OpenAI-compatible LLM provider with Pydantic validation, retries, and telemetry logging.",
     tags=["LLM Task Execution"]
 )
 @app.post(
@@ -268,6 +365,14 @@ def logout(current_user=Depends(get_current_user)):
     tags=["LLM Task Execution"]
 )
 def execute_task(request: TaskExecutionRequest):
+    # Kill Switch Check
+    llm_enabled = os.getenv("LLM_ENABLED", "true").strip().lower()
+    if llm_enabled in ["false", "0", "no", "off"]:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="LLM service is disabled via kill switch (LLM_ENABLED=false)."
+        )
+
     system_instruction = load_system_prompt()
     
     temp = 0.0
@@ -300,13 +405,16 @@ def execute_task(request: TaskExecutionRequest):
     api_key = os.getenv("LLM_API_KEY", "")
     model = os.getenv("LLM_MODEL", "openrouter/free")
 
-    client = OpenAI(base_url=base_url, api_key=api_key)
+    # Explicit 30-second client timeout
+    client = OpenAI(base_url=base_url, api_key=api_key, timeout=30.0)
 
     # Attempt 1: Primary LLM call & Pydantic validation
     raw_response_1 = ""
     error_1 = ""
+    start_time_1 = time.time()
     try:
-        completion = client.chat.completions.create(
+        completion = call_llm_with_retry(
+            client=client,
             model=model,
             messages=[
                 {"role": "system", "content": system_instruction},
@@ -314,14 +422,33 @@ def execute_task(request: TaskExecutionRequest):
             ],
             temperature=temp
         )
+        latency_1 = (time.time() - start_time_1) * 1000.0
         raw_response_1 = completion.choices[0].message.content or ""
-        return validate_llm_json(raw_response_1, request.task_id)
+        validated_resp = validate_llm_json(raw_response_1, request.task_id)
+
+        in_tokens = getattr(completion.usage, "prompt_tokens", 0) if completion.usage else 0
+        out_tokens = getattr(completion.usage, "completion_tokens", 0) if completion.usage else 0
+
+        log_llm_call_metrics(
+            model=model,
+            prompt_version=PROMPT_VERSION,
+            input_tokens=in_tokens,
+            output_tokens=out_tokens,
+            latency_ms=latency_1,
+            repair_status="none",
+            task_id=request.task_id
+        )
+        return validated_resp
+
+    except HTTPException:
+        raise
     except Exception as exc:
         error_1 = sanitize_error(exc)
 
     # Attempt 2: Single Repair Retry with validation error feedback
     raw_response_2 = ""
     error_2 = ""
+    start_time_2 = time.time()
     try:
         repair_user_prompt = (
             f"IMPORTANT REPAIR INSTRUCTION:\n"
@@ -342,17 +469,46 @@ def execute_task(request: TaskExecutionRequest):
             messages.append({"role": "assistant", "content": raw_response_1})
         messages.append({"role": "user", "content": repair_user_prompt})
 
-        repair_completion = client.chat.completions.create(
+        repair_completion = call_llm_with_retry(
+            client=client,
             model=model,
             messages=messages,
             temperature=temp
         )
+        latency_2 = (time.time() - start_time_2) * 1000.0
         raw_response_2 = repair_completion.choices[0].message.content or ""
-        return validate_llm_json(raw_response_2, request.task_id)
+        validated_resp = validate_llm_json(raw_response_2, request.task_id)
+
+        in_tokens = getattr(repair_completion.usage, "prompt_tokens", 0) if repair_completion.usage else 0
+        out_tokens = getattr(repair_completion.usage, "completion_tokens", 0) if repair_completion.usage else 0
+
+        log_llm_call_metrics(
+            model=model,
+            prompt_version=PROMPT_VERSION,
+            input_tokens=in_tokens,
+            output_tokens=out_tokens,
+            latency_ms=latency_2,
+            repair_status="repaired",
+            task_id=request.task_id
+        )
+        return validated_resp
+
+    except HTTPException:
+        raise
     except Exception as exc:
         error_2 = sanitize_error(exc)
 
-    # Both initial call and repair retry failed -> Log quarantine & return 422 Unprocessable Entity
+    # Both calls/repairs failed -> Log telemetry (failed), log quarantine & return 422
+    log_llm_call_metrics(
+        model=model,
+        prompt_version=PROMPT_VERSION,
+        input_tokens=0,
+        output_tokens=0,
+        latency_ms=(time.time() - start_time_1) * 1000.0,
+        repair_status="failed",
+        task_id=request.task_id
+    )
+
     quarantine_record = {
         "task_id": request.task_id,
         "prompt": request.prompt,
